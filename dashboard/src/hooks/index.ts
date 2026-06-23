@@ -2,7 +2,7 @@ export { useProjects, useProject } from './useProjects';
 export { useSessions, useSession, useSessionMutation, useDeleteSession, useDeletedSessionCount } from './useSessions';
 export { useInsights, useDeleteInsight } from './useInsights';
 export { useMessages } from './useMessages';
-export { useDashboardStats } from './useAnalytics';
+export { useDashboardStats, useActivity } from './useAnalytics';
 export { useAnalyzeSession } from './useAnalysis';
 export { useLlmConfig, useSaveLlmConfig } from './useConfig';
 export { useExportMarkdown } from './useExport';

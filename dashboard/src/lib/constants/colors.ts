@@ -121,6 +121,17 @@ export const CHART_COLORS = {
     sessions: '#3b82f6',  // blue-500
     insights: '#22c55e',  // green-500
   },
+  // Activity chart metric selector — per-metric accent + stacked composite layers
+  activityMetrics: {
+    composite: '#6366f1',      // indigo-500
+    cost: '#10b981',           // emerald-500
+    tokens: '#3b82f6',         // blue-500
+    tool_calls: '#f59e0b',     // amber-500
+    messages: '#ec4899',       // pink-500
+    projects: '#a855f7',       // purple-500
+    sessions: '#64748b',       // slate-500
+    cognitive_load: '#ef4444', // red-500 — context-switching intensity
+  },
   // Top projects bar chart
   projects: {
     sessions: '#3b82f6',  // blue-500

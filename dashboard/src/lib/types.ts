@@ -125,6 +125,28 @@ export interface DailyStats {
   estimated_cost_usd?: number;
 }
 
+// Per-day activity series from /api/analytics/activity.
+// All-time, gap-filled (zero-filled) calendar days. Powers the Activity chart's
+// metric selector and composite score. Metric defs match the CLI dashboard:
+//   tokens = input + output + cache_creation + cache_read
+//   cost   = SUM(estimated_cost_usd)
+export interface ActivityDay {
+  date: string;          // YYYY-MM-DD (local calendar day, from started_at)
+  sessions: number;
+  projects: number;      // distinct projects touched that day
+  messages: number;
+  tool_calls: number;
+  tokens: number;
+  cost: number;
+  // Cognitive load: integral of (concurrent warm sessions × concurrent warm
+  // projects²) over the day's active minutes. A human turn keeps a session "warm"
+  // for ~15 min; cross-project concurrency compounds steeply (S×P²). Idle sessions
+  // cool off and add nothing — captures context-switching cost, not raw volume.
+  cognitive_load: number;
+  peak_sessions: number;  // max concurrent warm sessions in any single minute
+  peak_projects: number;  // max concurrent warm projects in any single minute
+}
+
 /**
  * Safely parse a JSON-encoded string field from the SQLite API response.
  * Returns defaultValue if the field is null, empty, or invalid JSON.
