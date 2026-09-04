@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { getDb } from '@code-insights/cli/db/client';
+import { mondayOfIsoWeek } from './shared-aggregation.js';
 
 const app = new Hono();
 
@@ -163,6 +164,284 @@ app.get('/activity', (c) => {
   }
 
   return c.json({ days });
+});
+
+// ============================================================
+// Projects lifecycle
+// ============================================================
+// A logical project can be recorded as several `projects` rows: the same
+// folder gets re-hashed under path-hash vs git-remote id sources, and Git
+// worktrees (a `.claude/worktrees/<name>` path segment) get their own row.
+// We collapse those into one "logical project" before computing lifecycle.
+
+const INACTIVITY_DAYS = 60;
+const INACTIVITY_MS = INACTIVITY_DAYS * 86_400_000;
+const WEEK_MS = 7 * 86_400_000;
+
+type LifecycleStatus = 'active' | 'reactivated' | 'dropped';
+type LifecycleEventType = 'started' | 'reactivated' | 'dropped';
+
+interface RawProjectRow {
+  id: string;
+  name: string;
+  path: string;
+}
+
+/**
+ * Normalize a project path for identity matching: URL-decode, backslashes to
+ * forward slashes, lowercase a leading drive letter (and drop any leading
+ * slash in front of it, since URL-encoded Windows paths often carry one —
+ * e.g. "/c%3A/Users/..." vs "C:\Users\..." must normalize identically), and
+ * fold a trailing worktree segment back onto its parent repo path.
+ */
+export function normalizeProjectPath(rawPath: string): string {
+  let p = rawPath;
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // Not valid percent-encoding — use the raw path as-is.
+  }
+  p = p.replace(/\\/g, '/');
+  const driveMatch = p.match(/^\/?([A-Za-z]):(.*)$/);
+  if (driveMatch) {
+    p = `${driveMatch[1].toLowerCase()}:${driveMatch[2]}`;
+  }
+  p = p.replace(/\/\.claude\/worktrees\/[^/]+\/?$/, '');
+  p = p.replace(/\/+$/, '');
+  return p;
+}
+
+interface LogicalProject {
+  key: string;
+  name: string;
+  path: string; // representative raw path (from the most-active grouped row)
+  sessionTimestamps: number[]; // ms epoch, ascending
+}
+
+/**
+ * Group raw `projects` rows into logical projects by exact name + normalized
+ * path match, union their session timestamps, and drop any logical project
+ * with fewer than 2 total sessions (never counts as a "start").
+ */
+export function buildLogicalProjects(
+  projects: RawProjectRow[],
+  sessionTimestampsByProjectId: Map<string, number[]>
+): LogicalProject[] {
+  const groups = new Map<string, { name: string; rawIds: string[] }>();
+  for (const p of projects) {
+    const key = `${p.name}\u0000${normalizeProjectPath(p.path)}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { name: p.name, rawIds: [] };
+      groups.set(key, g);
+    }
+    g.rawIds.push(p.id);
+  }
+
+  const rawById = new Map(projects.map((p) => [p.id, p]));
+
+  const logical: LogicalProject[] = [];
+  for (const [key, g] of groups) {
+    const timestamps: number[] = [];
+    let repRaw: RawProjectRow | undefined;
+    let repCount = -1;
+    for (const rawId of g.rawIds) {
+      const ts = sessionTimestampsByProjectId.get(rawId) ?? [];
+      timestamps.push(...ts);
+      if (ts.length > repCount) {
+        repCount = ts.length;
+        repRaw = rawById.get(rawId);
+      }
+    }
+    if (timestamps.length < 2) continue;
+    timestamps.sort((a, b) => a - b);
+    logical.push({ key, name: g.name, path: repRaw?.path ?? '', sessionTimestamps: timestamps });
+  }
+  return logical;
+}
+
+interface LifecycleEvent {
+  week: number; // ms epoch of the Monday this event fires on
+  type: LifecycleEventType;
+}
+
+interface ProjectLifecycle {
+  events: LifecycleEvent[];
+  status: LifecycleStatus;
+  firstSeen: number;
+  lastSeen: number;
+}
+
+/**
+ * Walk a project's sorted session timestamps, splitting into segments
+ * wherever consecutive sessions are more than INACTIVITY_DAYS apart. The
+ * first segment starts "active"; every later segment follows a >60d gap, so
+ * it starts "reactivated". A segment ends in a "dropped" event 60 days after
+ * its last session if that gap is followed by another segment (always true,
+ * by construction) or — for the final segment — if `now` is past it.
+ */
+export function computeLifecycle(timestamps: number[], nowMs: number): ProjectLifecycle {
+  const segments: Array<{ start: number; end: number }> = [];
+  let segStart = timestamps[0];
+  let segEnd = timestamps[0];
+  for (let i = 1; i < timestamps.length; i++) {
+    const gap = timestamps[i] - timestamps[i - 1];
+    if (gap > INACTIVITY_MS) {
+      segments.push({ start: segStart, end: segEnd });
+      segStart = timestamps[i];
+    }
+    segEnd = timestamps[i];
+  }
+  segments.push({ start: segStart, end: segEnd });
+
+  const events: LifecycleEvent[] = [];
+  let status: LifecycleStatus = 'active';
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const isLast = i === segments.length - 1;
+    const startType: LifecycleEventType = i === 0 ? 'started' : 'reactivated';
+    events.push({ week: mondayOfIsoWeek(new Date(seg.start)).getTime(), type: startType });
+
+    const gapAfter = isLast ? nowMs - seg.end : segments[i + 1].start - seg.end;
+    if (gapAfter > INACTIVITY_MS) {
+      const dropDate = seg.end + INACTIVITY_MS;
+      events.push({ week: mondayOfIsoWeek(new Date(dropDate)).getTime(), type: 'dropped' });
+      if (isLast) status = 'dropped';
+    } else if (isLast) {
+      status = i === 0 ? 'active' : 'reactivated';
+    }
+  }
+
+  return { events, status, firstSeen: timestamps[0], lastSeen: timestamps[timestamps.length - 1] };
+}
+
+interface WeekRow {
+  week: string; // YYYY-MM-DD (Monday)
+  active: number;
+  reactivated: number;
+  dropped: number;
+  started: number;
+  newly_dropped: number;
+}
+
+/**
+ * Sweep every project's lifecycle events in week order, maintaining running
+ * cumulative counts per bucket. Gap-filled week-by-week (like /activity
+ * gap-fills days) from the first event's week through the current week.
+ */
+export function buildWeeklySeries(
+  lifecycles: Array<{ key: string; events: LifecycleEvent[] }>,
+  nowMs: number
+): WeekRow[] {
+  const eventsByWeek = new Map<number, Array<{ key: string; type: LifecycleEventType }>>();
+  let minWeek = Infinity;
+  for (const lc of lifecycles) {
+    for (const e of lc.events) {
+      if (e.week < minWeek) minWeek = e.week;
+      let arr = eventsByWeek.get(e.week);
+      if (!arr) {
+        arr = [];
+        eventsByWeek.set(e.week, arr);
+      }
+      arr.push({ key: lc.key, type: e.type });
+    }
+  }
+  if (minWeek === Infinity) return [];
+
+  const currentWeek = mondayOfIsoWeek(new Date(nowMs)).getTime();
+  const state = new Map<string, LifecycleStatus>();
+  let active = 0;
+  let reactivated = 0;
+  let dropped = 0;
+  const rows: WeekRow[] = [];
+
+  for (let w = minWeek; w <= currentWeek; w += WEEK_MS) {
+    const weekEvents = eventsByWeek.get(w) ?? [];
+    let started = 0;
+    let newlyDropped = 0;
+    for (const ev of weekEvents) {
+      if (ev.type === 'started') {
+        active++;
+        state.set(ev.key, 'active');
+        started++;
+      } else if (ev.type === 'reactivated') {
+        dropped--;
+        reactivated++;
+        state.set(ev.key, 'reactivated');
+        started++;
+      } else {
+        const prev = state.get(ev.key);
+        if (prev === 'active') active--;
+        else if (prev === 'reactivated') reactivated--;
+        dropped++;
+        state.set(ev.key, 'dropped');
+        newlyDropped++;
+      }
+    }
+    rows.push({
+      week: new Date(w).toISOString().slice(0, 10),
+      active,
+      reactivated,
+      dropped,
+      started,
+      newly_dropped: newlyDropped,
+    });
+  }
+  return rows;
+}
+
+// Cumulative weekly lifecycle (started/reactivated/dropped) for every logical
+// project since the first-ever session, plus a current-status summary table.
+app.get('/projects-lifecycle', (c) => {
+  const db = getDb();
+
+  const rawProjects = db.prepare(`SELECT id, name, path FROM projects`).all() as RawProjectRow[];
+  const sessionRows = db.prepare(`
+    SELECT project_id, started_at FROM sessions
+    WHERE deleted_at IS NULL AND started_at IS NOT NULL AND started_at <> ''
+  `).all() as Array<{ project_id: string; started_at: string }>;
+
+  const timestampsByProjectId = new Map<string, number[]>();
+  for (const r of sessionRows) {
+    const ts = new Date(r.started_at).getTime();
+    if (Number.isNaN(ts)) continue;
+    let arr = timestampsByProjectId.get(r.project_id);
+    if (!arr) {
+      arr = [];
+      timestampsByProjectId.set(r.project_id, arr);
+    }
+    arr.push(ts);
+  }
+
+  const logicalProjects = buildLogicalProjects(rawProjects, timestampsByProjectId);
+  if (logicalProjects.length === 0) {
+    return c.json({ weeks: [], projects: [] });
+  }
+
+  const nowMs = Date.now();
+  const lifecycles = logicalProjects.map((lp) => ({
+    key: lp.key,
+    ...computeLifecycle(lp.sessionTimestamps, nowMs),
+  }));
+  const lifecycleByKey = new Map(lifecycles.map((l) => [l.key, l]));
+
+  const weeks = buildWeeklySeries(lifecycles, nowMs);
+
+  const projectsOut = logicalProjects
+    .map((lp) => {
+      const lc = lifecycleByKey.get(lp.key)!;
+      return {
+        name: lp.name,
+        path: lp.path,
+        first_seen: new Date(lc.firstSeen).toISOString().slice(0, 10),
+        last_seen: new Date(lc.lastSeen).toISOString().slice(0, 10),
+        session_count: lp.sessionTimestamps.length,
+        status: lc.status,
+      };
+    })
+    .sort((a, b) => b.last_seen.localeCompare(a.last_seen));
+
+  return c.json({ weeks, projects: projectsOut });
 });
 
 // Global cumulative usage stats
