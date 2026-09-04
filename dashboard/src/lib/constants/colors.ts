@@ -136,6 +136,14 @@ export const CHART_COLORS = {
   projects: {
     sessions: '#3b82f6',  // blue-500
   },
+  // Project lifecycle chart — cumulative area layers + weekly start/drop event bars
+  projectLifecycle: {
+    active: '#10b981',        // emerald-500
+    reactivated: '#f59e0b',   // amber-500
+    dropped: '#94a3b8',       // slate-400
+    started: '#3b82f6',       // blue-500 — weekly started/reactivated event bar
+    dropped_event: '#ef4444', // red-500 — weekly dropped event bar
+  },
   // Model distribution pie chart
   models: ['#3b82f6', '#a855f7', '#22c55e', '#f59e0b', '#f43f5e', '#06b6d4'],
   // Cost chart
