@@ -79,7 +79,7 @@ describe('normalizeProjectPath', () => {
 });
 
 describe('buildLogicalProjects', () => {
-  it('groups raw rows by exact name + normalized path and unions their sessions', () => {
+  it('groups raw rows by normalized path alone and unions their sessions', () => {
     const projects = [
       { id: 'p1', name: 'har-cleaner', path: '/c%3A/Users/dev/Repos/har-cleaner' },
       { id: 'p2', name: 'har-cleaner', path: 'C:\\Users\\dev\\Repos\\har-cleaner' },
@@ -99,7 +99,7 @@ describe('buildLogicalProjects', () => {
     expect(buildLogicalProjects(projects, sessions)).toEqual([]);
   });
 
-  it('keeps rows with differing names as separate logical projects even if paths fold together', () => {
+  it('folds a worktree row into its parent repo when the paths normalize together, even though names differ', () => {
     const projects = [
       { id: 'p1', name: 'ubt-maven', path: 'C:\\Repos\\ubt-maven' },
       { id: 'p2', name: 'keen-davinci-c306f0', path: 'C:\\Repos\\ubt-maven\\.claude\\worktrees\\keen-davinci-c306f0' },
@@ -109,7 +109,39 @@ describe('buildLogicalProjects', () => {
       ['p2', [3000, 4000]],
     ]);
     const result = buildLogicalProjects(projects, sessions);
-    expect(result.map((p) => p.name).sort()).toEqual(['keen-davinci-c306f0', 'ubt-maven']);
+    expect(result).toHaveLength(1);
+    // Human-chosen name wins over the worktree's auto-generated name, even
+    // though the worktree row has more sessions.
+    expect(result[0].name).toBe('ubt-maven');
+    expect(result[0].sessionTimestamps).toEqual([1000, 2000, 3000, 4000]);
+  });
+
+  it('prefers a human-chosen name over an adjective-noun-hex sandbox-pattern name at the same path', () => {
+    const projects = [
+      { id: 'p1', name: 'dazzling-jones-2f03f7', path: '/repos/side-project' },
+      { id: 'p2', name: 'side-project', path: '/repos/side-project' },
+    ];
+    const sessions = new Map([
+      ['p1', [1000, 2000, 3000]],
+      ['p2', [4000]],
+    ]);
+    const result = buildLogicalProjects(projects, sessions);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('side-project');
+  });
+
+  it('falls back to the highest-session-count name when every row in the group looks auto-generated', () => {
+    const projects = [
+      { id: 'p1', name: 'dazzling-jones-2f03f7', path: '/repos/x' },
+      { id: 'p2', name: 'zen-pike-499d41', path: '/repos/x' },
+    ];
+    const sessions = new Map([
+      ['p1', [1000]],
+      ['p2', [2000, 3000]],
+    ]);
+    const result = buildLogicalProjects(projects, sessions);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('zen-pike-499d41');
   });
 
   it('picks the raw path from the grouped row with the most sessions as the representative', () => {
@@ -357,7 +389,7 @@ describe('Analytics routes', () => {
       expect(body.projects[0].session_count).toBe(2);
     });
 
-    it('does not merge a worktree row into its parent repo when names differ', async () => {
+    it('folds a worktree row into its parent repo, preferring the human-chosen name', async () => {
       seedProject('p1', 'ubt-maven', 'C:\\Users\\dev\\Repos\\ubt-maven');
       seedProject('p2', 'keen-davinci-c306f0', 'C:\\Users\\dev\\Repos\\ubt-maven\\.claude\\worktrees\\keen-davinci-c306f0');
       seedSession('p1', '2026-01-01T00:00:00Z');
@@ -368,8 +400,9 @@ describe('Analytics routes', () => {
       const app = createApp();
       const res = await app.request('/api/analytics/projects-lifecycle');
       const body = await res.json();
-      const names = body.projects.map((p: { name: string }) => p.name).sort();
-      expect(names).toEqual(['keen-davinci-c306f0', 'ubt-maven']);
+      expect(body.projects).toHaveLength(1);
+      expect(body.projects[0].name).toBe('ubt-maven');
+      expect(body.projects[0].session_count).toBe(4);
     });
 
     it('marks a project dropped once its last session is more than 60 days old', async () => {
