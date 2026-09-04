@@ -1,4 +1,5 @@
 export { useProjects, useProject } from './useProjects';
+export { useProjectsLifecycle } from './useProjectsLifecycle';
 export { useSessions, useSession, useSessionMutation, useDeleteSession, useDeletedSessionCount } from './useSessions';
 export { useInsights, useDeleteInsight } from './useInsights';
 export { useMessages } from './useMessages';
