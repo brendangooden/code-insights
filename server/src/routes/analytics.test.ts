@@ -99,41 +99,42 @@ describe('buildLogicalProjects', () => {
     expect(buildLogicalProjects(projects, sessions)).toEqual([]);
   });
 
-  it('folds a worktree row into its parent repo when the paths normalize together, even though names differ', () => {
+  it('folds a worktree row into its parent repo, preferring the parent even when the worktree has more sessions', () => {
     const projects = [
       { id: 'p1', name: 'ubt-maven', path: 'C:\\Repos\\ubt-maven' },
       { id: 'p2', name: 'keen-davinci-c306f0', path: 'C:\\Repos\\ubt-maven\\.claude\\worktrees\\keen-davinci-c306f0' },
     ];
     const sessions = new Map([
       ['p1', [1000, 2000]],
-      ['p2', [3000, 4000]],
+      ['p2', [3000, 4000, 5000]],
     ]);
     const result = buildLogicalProjects(projects, sessions);
     expect(result).toHaveLength(1);
-    // Human-chosen name wins over the worktree's auto-generated name, even
-    // though the worktree row has more sessions.
     expect(result[0].name).toBe('ubt-maven');
-    expect(result[0].sessionTimestamps).toEqual([1000, 2000, 3000, 4000]);
+    expect(result[0].path).toBe('C:\\Repos\\ubt-maven');
+    expect(result[0].sessionTimestamps).toEqual([1000, 2000, 3000, 4000, 5000]);
   });
 
-  it('prefers a human-chosen name over an adjective-noun-hex sandbox-pattern name at the same path', () => {
+  it('folds a worktree row (name="optimistic-mclean-1ce467") into its parent repo row (name="ubt-tool-hub")', () => {
     const projects = [
-      { id: 'p1', name: 'dazzling-jones-2f03f7', path: '/repos/side-project' },
-      { id: 'p2', name: 'side-project', path: '/repos/side-project' },
+      { id: 'p1', name: 'optimistic-mclean-1ce467', path: 'C:\\Repos\\ubt-tool-hub\\.claude\\worktrees\\optimistic-mclean-1ce467' },
+      { id: 'p2', name: 'ubt-tool-hub', path: 'C:\\Repos\\ubt-tool-hub' },
     ];
     const sessions = new Map([
-      ['p1', [1000, 2000, 3000]],
-      ['p2', [4000]],
+      ['p1', [1000, 2000]],
+      ['p2', [3000]],
     ]);
     const result = buildLogicalProjects(projects, sessions);
     expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('side-project');
+    expect(result[0].name).toBe('ubt-tool-hub');
+    expect(result[0].path).toBe('C:\\Repos\\ubt-tool-hub');
+    expect(result[0].sessionTimestamps).toEqual([1000, 2000, 3000]);
   });
 
-  it('falls back to the highest-session-count name when every row in the group looks auto-generated', () => {
+  it('falls back to the highest-session-count row when every row in the group is a worktree path', () => {
     const projects = [
-      { id: 'p1', name: 'dazzling-jones-2f03f7', path: '/repos/x' },
-      { id: 'p2', name: 'zen-pike-499d41', path: '/repos/x' },
+      { id: 'p1', name: 'dazzling-jones-2f03f7', path: 'C:\\Repos\\x\\.claude\\worktrees\\dazzling-jones-2f03f7' },
+      { id: 'p2', name: 'zen-pike-499d41', path: 'C:\\Repos\\x\\.claude\\worktrees\\zen-pike-499d41' },
     ];
     const sessions = new Map([
       ['p1', [1000]],
